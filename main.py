@@ -21,18 +21,43 @@ TABLE_NAME = "pitches"
 async def startup_event():
     global batter_name_map, TABLE_NAME
 
-    DB_URL = "https://drive.google.com/uc?export=download&id=1SAcDhIJhUwNxUtta5NibiLmqg8NQRJlM"
+    # 你的 Google Drive 檔案 ID
+    FILE_ID = "1SAcDhIJhUwNxUtta5NibiLmqg8NQRJlM"
+    
     if not os.path.exists(DB_PATH):
         print("正在從雲端下載大型資料庫 (1.15GB)，請稍候...")
         try:
-            response = requests.get(DB_URL, stream=True)
+            # 使用 Session 處理 Google Drive 的大檔案確認機制
+            session = requests.Session()
+            download_url = "https://docs.google.com/uc?export=download"
+            
+            # 第一步：嘗試獲取下載頁面，並從 cookie 中抓取確認 token
+            response = session.get(download_url, params={'id': FILE_ID}, stream=True)
+            token = None
+            for key, value in response.cookies.items():
+                if key.startswith('download_warning'):
+                    token = value
+                    break
+            
+            # 第二步：如果抓到 token，帶著 token 正式下載；否則直接下載
+            params = {'id': FILE_ID}
+            if token:
+                params['confirm'] = token
+                
+            response = session.get(download_url, params=params, stream=True)
+            
+            # 開始寫入檔案
             with open(DB_PATH, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                for chunk in response.iter_content(chunk_size=32768): # 加大 chunk_size 加快速度
+                    if chunk:
+                        f.write(chunk)
             print("下載完成！")
+            
         except Exception as e:
             print(f"下載失敗: {e}")
             return
+
+    # --- 以下原本的邏輯完全不動 ---
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -49,7 +74,6 @@ async def startup_event():
                 batter_name_map[str(row['key_mlbam'])] = f"{row['name_last'].title()}, {row['name_first'].title()}"
     except Exception as e:
         print(f"啟動出錯: {e}")
-
 @app.get("/api/batters")
 async def get_batters():
     return sorted([{"id": k, "name": v} for k, v in batter_name_map.items()], key=lambda x: x['name'])
