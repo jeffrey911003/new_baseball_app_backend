@@ -21,59 +21,67 @@ TABLE_NAME = "pitches"
 async def startup_event():
     global batter_name_map, TABLE_NAME
 
-    # 你的 Google Drive 檔案 ID
-    FILE_ID = "1SAcDhIJhUwNxUtta5NibiLmqg8NQRJlM"
+    # --- 1. 下載邏輯 (使用 Dropbox 直連) ---
+    # 這裡已經幫你改好 dl=1 了
+    DB_URL = "https://www.dropbox.com/scl/fi/vvytrbedvwfamdx3uqhjv/baseball_data.db?rlkey=jx3t30rwcrxu8sqjqlkwz2xgz&st=rqm3pqhf&dl=1"
     
+    # 這裡多加一個邏輯：如果檔案小於 100MB，代表是上次壞掉的殘留檔，強制刪除重載
+    if os.path.exists(DB_PATH):
+        if os.path.getsize(DB_PATH) < 100 * 1024 * 1024:
+            print("偵測到上次下載不完整的殘留檔案，正在清理並重新下載...")
+            os.remove(DB_PATH)
+
     if not os.path.exists(DB_PATH):
-        print("正在從雲端下載大型資料庫 (1.15GB)，請稍候...")
+        print("正在從 Dropbox 下載大型資料庫 (1.15GB)，這可能需要 10-15 分鐘，請保持耐心...")
         try:
-            # 使用 Session 處理 Google Drive 的大檔案確認機制
-            session = requests.Session()
-            download_url = "https://docs.google.com/uc?export=download"
+            response = requests.get(DB_URL, stream=True)
+            response.raise_for_status() 
             
-            # 第一步：嘗試獲取下載頁面，並從 cookie 中抓取確認 token
-            response = session.get(download_url, params={'id': FILE_ID}, stream=True)
-            token = None
-            for key, value in response.cookies.items():
-                if key.startswith('download_warning'):
-                    token = value
-                    break
-            
-            # 第二步：如果抓到 token，帶著 token 正式下載；否則直接下載
-            params = {'id': FILE_ID}
-            if token:
-                params['confirm'] = token
-                
-            response = session.get(download_url, params=params, stream=True)
-            
-            # 開始寫入檔案
             with open(DB_PATH, "wb") as f:
-                for chunk in response.iter_content(chunk_size=32768): # 加大 chunk_size 加快速度
+                # 使用 64KB 的區塊寫入，效能較好
+                for chunk in response.iter_content(chunk_size=65536):
                     if chunk:
                         f.write(chunk)
-            print("下載完成！")
+            
+            actual_size = os.path.getsize(DB_PATH) / (1024 * 1024)
+            print(f"下載完成！實際檔案大小: {actual_size:.2f} MB")
             
         except Exception as e:
             print(f"下載失敗: {e}")
+            if os.path.exists(DB_PATH):
+                os.remove(DB_PATH)
             return
 
-    # --- 以下原本的邏輯完全不動 ---
+    # --- 2. 資料庫讀取邏輯 ---
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
+        
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = [t[0] for t in cursor.fetchall()]
-        if "pitches" in tables: TABLE_NAME = "pitches"
-        elif tables: TABLE_NAME = tables[0]
+        if "pitches" in tables: 
+            TABLE_NAME = "pitches"
+        elif tables: 
+            TABLE_NAME = tables[0]
+        else:
+            print("警告: 資料庫中找不到任何資料表")
+            conn.close()
+            return
 
+        print("正在讀取打者清單並進行名稱轉換 (這一步連線較久)...")
         u_ids = pd.read_sql(f"SELECT DISTINCT batter FROM {TABLE_NAME} WHERE batter IS NOT NULL", conn)['batter'].tolist()
         conn.close()
+        
         if u_ids:
+            # 這裡會從網路抓取打者姓名，可能需要 1-2 分鐘
             lookup_df = playerid_reverse_lookup(u_ids, key_type='mlbam')
             for _, row in lookup_df.iterrows():
                 batter_name_map[str(row['key_mlbam'])] = f"{row['name_last'].title()}, {row['name_first'].title()}"
+        
+        print("✅ 後端初始化完成，500 萬筆數據已就緒！")
+
     except Exception as e:
-        print(f"啟動出錯: {e}")
+        print(f"❌ 啟動出錯: {e}")
 @app.get("/api/batters")
 async def get_batters():
     return sorted([{"id": k, "name": v} for k, v in batter_name_map.items()], key=lambda x: x['name'])
