@@ -1,6 +1,7 @@
 import sqlite3
 import pandas as pd
 import os
+import requests
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pybaseball import playerid_reverse_lookup
@@ -19,7 +20,19 @@ TABLE_NAME = "pitches"
 @app.on_event("startup")
 async def startup_event():
     global batter_name_map, TABLE_NAME
-    if not os.path.exists(DB_PATH): return
+
+    DB_URL = "https://drive.google.com/uc?export=download&id=1SAcDhIJhUwNxUtta5NibiLmqg8NQRJlM"
+    if not os.path.exists(DB_PATH):
+        print("正在從雲端下載大型資料庫 (1.15GB)，請稍候...")
+        try:
+            response = requests.get(DB_URL, stream=True)
+            with open(DB_PATH, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            print("下載完成！")
+        except Exception as e:
+            print(f"下載失敗: {e}")
+            return
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
